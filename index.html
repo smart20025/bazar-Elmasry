@@ -107,7 +107,7 @@ function showLogin() {
     catch { toast('بيانات الدخول غلط', true); }
   };
   $('#loginBtn').onclick = go;
-  $('#pass').onkeydown = e => e.key === 'Enter' && go();
+ $('#pass').onkeydown = e => { if (e.key === 'Enter') go(); };
 }
 
 onAuthStateChanged(auth, async u => {
