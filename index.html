@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>نظام المبيعات</title>
+<!-- مكتبة الرسوم البيانية -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{--m:#1e5eff;--bg:#f3f5f9;--bd:#dde2ec;--red:#d93025}
+*{box-sizing:border-box;font-family:Tahoma,Arial,sans-serif}
+body{margin:0;background:var(--bg);color:#222}
+header{background:#14213d;color:#fff;display:flex;gap:12px;align-items:center;padding:10px 16px}
+header span{margin-inline-start:auto;opacity:.85}
+nav{display:flex;gap:6px;flex-wrap:wrap;padding:10px 16px;background:#fff;border-bottom:1px solid var(--bd)}
+nav button{border:0;background:#eef1f7;padding:8px 14px;border-radius:8px;cursor:pointer}
+nav button.on{background:var(--m);color:#fff}
+main{padding:16px;max-width:1200px;margin:auto}
+.card{background:#fff;border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:14px;overflow-x:auto}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px}
+.kpi{background:#fff;border:1px solid var(--bd);border-radius:12px;padding:14px}
+.kpi small{color:#667}.kpi b{display:block;font-size:26px;margin-top:6px}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+table{width:100%;border-collapse:collapse}
+th,td{padding:8px;border-bottom:1px solid var(--bd);text-align:right;font-size:14px}
+th{background:#f7f9fc}
+input{padding:8px;border:1px solid var(--bd);border-radius:8px;width:100%}
+td input{min-width:90px}
+label{font-size:13px;color:#445}
+.btn{background:var(--m);color:#fff;border:0;padding:9px 16px;border-radius:8px;cursor:pointer}
+.btn.sec{background:#e6eaf3;color:#222}.btn.red{background:var(--red)}.btn.sm{padding:5px 10px;font-size:13px}
+.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;align-items:end}
+.low{color:var(--red);font-weight:bold}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#222;color:#fff;padding:10px 18px;border-radius:8px;z-index:9}
+.toast.bad{background:var(--red)}
+.login{max-width:340px;margin:12vh auto;background:#fff;padding:24px;border-radius:14px;border:1px solid var(--bd)}
+.login input{margin-bottom:10px}
+#printArea{display:none}
+/* وقت الطباعة بنخفي كل حاجة ونظهر الفاتورة بس */
+@media print{header,nav,main,.toast{display:none!important}#printArea{display:block!important;padding:10px}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getFirestore, collection, doc, getDoc, getDocs, addDoc, deleteDoc, onSnapshot, query, where, orderBy, limit, runTransaction, serverTimestamp }
+  from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+/* ========== الإعدادات: غيّر الاسم وبيانات Firebase ========== */
+const SHOP_NAME = "بازار المصري الجديد";
+const firebaseConfig = {
+  apiKey: "AIzaSyCde8f-2ydTs5BlUr6tHHX4bXm8jUYQdEg",
+  authDomain: "gift-shop-bb647.firebaseapp.com",
+  projectId: "gift-shop-bb647",
+  storageBucket: "gift-shop-bb647.firebasestorage.app",
+  messagingSenderId: "388088536433",
+  appId: "1:388088536433:web:7ebbb5ae86bc5c7fb22ad0"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+/* ========== متغيرات عامة ========== */
+let me = null;            // بيانات المستخدم الحالي
+let items = {};           // الأصناف (الكود -> الصنف)
+let unsubs = [];          // اشتراكات الأصناف
+let tabUnsub = null;      // اشتراكات التبويب الحالي
+let curTab = null, TABS = [];
+let invCache = {};        // كاش الفواتير المعروضة
+let invMonth = [];        // فواتير الشهر للداشبورد
+let charts = {};
+let costs = {};           // متوسط تكلفة كل صنف (الكود -> التكلفة) للأدمن بس
+let prefill = null;       // صنف جاهز للتعديل في شاشة المشتريات
+let onItemsChanged = () => {};
+
+/* ========== دوال مساعدة ========== */
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = n => (Math.round((+n || 0) * 100) / 100).toLocaleString('en-US');
+const pad = n => String(n).padStart(2, '0');
+const dKey = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;   // مفتاح اليوم
+const mKey = d => dKey(d).slice(0, 7);                                                // مفتاح الشهر
+const when = ts => ts?.toDate ? ts.toDate().toLocaleString('ar-EG') : '...';
+const summ = a => a.map(l => `${l.name}×${l.qty}`).join('، ');
+const sub = (...fns) => { tabUnsub = () => fns.forEach(f => f()); };
+function toast(msg, bad) {
+  const t = document.createElement('div');
+  t.className = 'toast' + (bad ? ' bad' : ''); t.textContent = msg;
+  document.body.appendChild(t); setTimeout(() => t.remove(), 3000);
+}
+// تسجيل أي حركة في السجل
+const log = (action, details) => addDoc(collection(db, 'logs'),
+  { ts: serverTimestamp(), uid: me.uid, user: me.name, role: me.role, action, details }).catch(() => {});
+
+/* ========== تسجيل الدخول ========== */
+function showLogin() {
+  $('#app').innerHTML = `<div class="login"><h2 style="text-align:center">${esc(SHOP_NAME)}</h2>
+    <input id="email" type="email" placeholder="الإيميل" autocomplete="username">
+    <input id="pass" type="password" placeholder="الباسورد" autocomplete="current-password">
+    <button class="btn" id="loginBtn" style="width:100%">دخول</button></div>`;
+  const go = async () => {
+    try { await signInWithEmailAndPassword(auth, $('#email').value.trim(), $('#pass').value); }
+    catch { toast('بيانات الدخول غلط', true); }
+  };
+  $('#loginBtn').onclick = go;
+  $('#pass').onkeydown = e => e.key === 'Enter' && go();
+}
+
+onAuthStateChanged(auth, async u => {
+  unsubs.forEach(f => f()); unsubs = [];
+  tabUnsub && tabUnsub(); tabUnsub = null;
+  if (!u) { me = null; showLogin(); return; }
+  const s = await getDoc(doc(db, 'users', u.uid));
+  if (!s.exists()) { await signOut(auth); toast('الحساب ده ملوش صلاحية', true); return; }
+  me = { uid: u.uid, ...s.data() };
+  // اشتراك لحظي في الأصناف
+  unsubs.push(onSnapshot(collection(db, 'items'), snap => {
+    items = {}; snap.forEach(d => items[d.id] = { id: d.id, ...d.data() });
+    onItemsChanged();
+  }));
+  me.role === 'admin' ? startAdmin() : startCashier();
+});
+
+/* ========== الهيكل العام والتبويبات ========== */
+function shell(tabs) {
+  TABS = tabs;
+  $('#app').innerHTML = `<header><b>${esc(SHOP_NAME)}</b><span>${esc(me.name)} (${me.role === 'admin' ? 'أدمن' : 'كاشير'})</span>
+    <button class="btn sec sm" id="out">خروج</button></header>
+    <nav id="tabs"></nav><main id="view"></main><datalist id="dl"></datalist><div id="printArea"></div>`;
+  $('#out').onclick = () => signOut(auth);
+  $('#tabs').innerHTML = tabs.map(t => `<button data-t="${t[0]}">${t[1]}</button>`).join('');
+  $('#tabs').onclick = e => e.target.dataset.t && go(e.target.dataset.t);
+  $('#view').onclick = e => {                       // أزرار الجداول (تعديل/حذف)
+    const b = e.target.closest('[data-act]');
+    if (b) actions[b.dataset.act](b.dataset.id);
+  };
+  go(tabs[0][0]);
+}
+function go(id) {
+  tabUnsub && tabUnsub(); tabUnsub = null;
+  Object.values(charts).forEach(c => c.destroy()); charts = {};
+  curTab = id;
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === id));
+  TABS.find(t => t[0] === id)[2]();
+}
+// قائمة البحث بالكود أو الاسم
+function fillDatalist() {
+  const dl = $('#dl'); if (!dl) return;
+  dl.innerHTML = Object.values(items).map(i => `<option value="${esc(i.code)} | ${esc(i.name)}">متاح: ${i.qty}</option>`).join('');
+}
+
+/* ========== محرر الفاتورة (مشترك بين الكاشير والأدمن) ========== */
+let cart = [], editing = null, afterSave = null;
+const blankRow = () => ({ code: '', name: '', price: 0, qty: '' });
+const oldQty = c => editing ? (editing.items.find(o => o.code === c)?.qty || 0) : 0;
+const avail = r => r.code ? ((items[r.code]?.qty ?? 0) + oldQty(r.code)) : '';
+
+function openEditor(inv, back) {
+  editing = inv || null; afterSave = back;
+  cart = inv ? inv.items.map(l => ({ ...l })) : [blankRow()];
+  $('#view').innerHTML = `<div class="card"><h3>${editing ? 'تعديل فاتورة رقم ' + editing.no : 'فاتورة جديدة'}</h3>
+    <table><thead><tr><th style="width:38%">الصنف (كود أو اسم)</th><th>المتاح</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th><th></th></tr></thead>
+    <tbody id="rows"></tbody></table><br>
+    <button class="btn sec" id="addRow">＋ صنف تاني</button>
+    <h2>الإجمالي: <span id="grand">0</span></h2>
+    <button class="btn sec" id="printBtn">طباعة</button>
+    <button class="btn" id="saveBtn">${editing ? 'حفظ التعديل' : 'تسجيل الفاتورة'}</button>
+    ${editing ? '<button class="btn sec" id="cancelBtn">إلغاء</button>' : ''}</div>`;
+  const rows = $('#rows');
+  rows.addEventListener('change', e => {            // اختيار صنف من البحث
+    if (!e.target.classList.contains('s')) return;
+    const i = +e.target.closest('tr').dataset.i, t = e.target.value.trim();
+    const it = items[t.split('|')[0].trim()] || Object.values(items).find(x => x.name === t);
+    if (it) cart[i] = { code: it.code, name: it.name, price: it.price, qty: cart[i].qty || '' };
+    else { cart[i] = { ...blankRow(), qty: cart[i].qty }; if (t) toast('الصنف مش موجود', true); }
+    drawRows();
+    setTimeout(() => rows.querySelector(`tr[data-i="${i}"] .q`)?.focus(), 0);
+  });
+  rows.addEventListener('input', e => {             // تغيير الكمية
+    if (!e.target.classList.contains('q')) return;
+    const tr = e.target.closest('tr'), r = cart[+tr.dataset.i];
+    r.qty = e.target.value;
+    tr.querySelector('.lt').textContent = fmt(r.price * r.qty); calc();
+  });
+  rows.addEventListener('click', e => {             // حذف سطر
+    if (!e.target.classList.contains('x')) return;
+    cart.splice(+e.target.closest('tr').dataset.i, 1);
+    if (!cart.length) cart.push(blankRow());
+    drawRows();
+  });
+  $('#addRow').onclick = () => { cart.push(blankRow()); drawRows(); rows.querySelector('tr:last-child .s').focus(); };
+  $('#printBtn').onclick = printNow;
+  $('#saveBtn').onclick = saveInvoice;
+  if ($('#cancelBtn')) $('#cancelBtn').onclick = () => afterSave && afterSave();
+  fillDatalist(); drawRows();
+}
+function drawRows() {
+  $('#rows').innerHTML = cart.map((r, i) => `<tr data-i="${i}">
+    <td><input class="s" list="dl" value="${r.code ? esc(r.code + ' | ' + r.name) : ''}" placeholder="ابحث بالكود أو الاسم"></td>
+    <td class="av">${avail(r)}</td>
+    <td><input class="q" type="number" step="any" min="0" value="${esc(r.qty)}"></td>
+    <td>${r.code ? fmt(r.price) : ''}</td><td class="lt">${r.code ? fmt(r.price * r.qty) : ''}</td>
+    <td><button class="btn red sm x">✕</button></td></tr>`).join('');
+  calc();
+}
+function calc() { $('#grand').textContent = fmt(cart.reduce((s, r) => s + (r.code ? r.price * r.qty : 0), 0)); }
+function updateAvail() {                            // تحديث المتاح لحظياً من غير ما نضيّع الفوكس
+  document.querySelectorAll('#rows tr').forEach(tr => { tr.querySelector('.av').textContent = avail(cart[+tr.dataset.i]); });
+}
+// تجميع الأصناف المكررة والتحقق من الكميات
+function collect() {
+  const m = {};
+  for (const r of cart) {
+    if (!r.code) continue;
+    const q = +r.qty;
+    if (!(q > 0)) { toast('اكتب كمية صحيحة للصنف ' + r.name, true); return null; }
+    (m[r.code] = m[r.code] || { code: r.code, name: r.name, price: r.price, qty: 0 }).qty += q;
+  }
+  const lines = Object.values(m);
+  if (!lines.length) { toast('الفاتورة فاضية', true); return null; }
+  for (const l of lines) {
+    const a = (items[l.code]?.qty ?? 0) + oldQty(l.code);
+    if (l.qty > a) { toast(`الكمية المطلوبة من ${l.name} أكتر من المتاح (${a})`, true); return null; }
+  }
+  return lines;
+}
+async function saveInvoice() {
+  const lines = collect(); if (!lines) return;
+  const total = lines.reduce((s, l) => s + l.price * l.qty, 0);
+  const old = editing ? editing.items : [];
+  let no;
+  try {
+    await runTransaction(db, async tx => {
+      // كل القراءات الأول وبعدين الكتابة (شرط الـ transaction)
+      const codes = [...new Set([...old.map(o => o.code), ...lines.map(l => l.code)])];
+      const refs = codes.map(c => doc(db, 'items', c));
+      const snaps = await Promise.all(refs.map(r => tx.get(r)));
+      const cRef = doc(db, 'meta', 'counter');
+      const cSnap = editing ? null : await tx.get(cRef);
+      snaps.forEach((s, i) => {
+        const c = codes[i];
+        const d = (lines.find(l => l.code === c)?.qty || 0) - (old.find(o => o.code === c)?.qty || 0); // الفرق
+        if (!s.exists()) { if (d > 0) throw new Error('الصنف ' + c + ' مش موجود'); return; }
+        const left = s.data().qty - d;
+        if (left < 0) throw new Error('الكمية مش كفاية للصنف ' + s.data().name);
+        if (d !== 0) tx.update(refs[i], { qty: left });   // خصم أو إرجاع من المخزن
+      });
+      if (editing) {
+        no = editing.no;
+        tx.update(doc(db, 'invoices', editing.id), { items: lines, total, editedAt: serverTimestamp(), editedBy: me.name });
+      } else {
+        no = (cSnap.exists() ? cSnap.data().invoice : 0) + 1;
+        tx.set(cRef, { invoice: no });
+        const now = new Date();
+        tx.set(doc(collection(db, 'invoices')), { no, items: lines, total, cashierUid: me.uid, cashierName: me.name,
+          ts: serverTimestamp(), dayKey: dKey(now), monthKey: mKey(now) });
+      }
+    });
+    if (editing) await log('تعديل فاتورة', `فاتورة ${no}: قبل [${summ(old)}] بعد [${summ(lines)}] - الإجمالي ${fmt(total)}`);
+    else await log('فاتورة جديدة', `فاتورة ${no}: ${summ(lines)} - الإجمالي ${fmt(total)}`);
+    toast('تم الحفظ ✔');
+    afterSave && afterSave();
+  } catch (e) { toast(e.message || 'حصل خطأ', true); }
+}
+function printNow() {
+  const lines = cart.filter(r => r.code && +r.qty > 0);
+  if (!lines.length) return toast('مفيش أصناف للطباعة', true);
+  const total = lines.reduce((s, r) => s + r.price * r.qty, 0);
+  $('#printArea').innerHTML = `<h2 style="text-align:center">${esc(SHOP_NAME)}</h2>
+    <p>فاتورة ${editing ? 'رقم ' + editing.no : ''} — ${new Date().toLocaleString('ar-EG')}</p>
+    <table><tr><th>الصنف</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th></tr>
+    ${lines.map(r => `<tr><td>${esc(r.name)}</td><td>${r.qty}</td><td>${fmt(r.price)}</td><td>${fmt(r.price * r.qty)}</td></tr>`).join('')}</table>
+    <h3>الإجمالي: ${fmt(total)}</h3>`;
+  window.print();
+}
+
+/* ========== الكاشير ========== */
+function startCashier() {
+  onItemsChanged = () => { fillDatalist(); updateAvail(); };
+  shell([['sale', 'فاتورة جديدة', () => openEditor(null, () => go('sale'))], ['mine', 'فواتيري النهاردة', mineTab]]);
+}
+async function mineTab() {
+  $('#view').innerHTML = `<div class="card"><h3>فواتيري النهاردة</h3><table><thead><tr><th>رقم</th><th>الأصناف</th><th>الإجمالي</th><th></th></tr></thead><tbody id="mRows"></tbody></table></div>`;
+  const s = await getDocs(query(collection(db, 'invoices'), where('cashierUid', '==', me.uid), where('dayKey', '==', dKey(new Date()))));
+  invCache = {};
+  const arr = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => b.no - a.no);
+  arr.forEach(x => invCache[x.id] = x);
+  $('#mRows').innerHTML = arr.map(x => `<tr><td>${x.no}</td><td>${esc(summ(x.items))}${x.editedBy ? ' <small>(معدّلة)</small>' : ''}</td><td>${fmt(x.total)}</td>
+    <td><button class="btn sm" data-act="editInv" data-id="${x.id}">تعديل</button></td></tr>`).join('') || '<tr><td colspan="4">مفيش فواتير لسه</td></tr>';
+}
+
+/* ========== الأدمن ========== */
+function startAdmin() {
+  onItemsChanged = () => {
+    fillDatalist(); updateAvail();
+    if (curTab === 'dash') drawDash();
+    if (curTab === 'stock') drawStock();
+  };
+  // اشتراك لحظي في متوسط التكلفة
+  unsubs.push(onSnapshot(collection(db, 'costs'), snap => {
+    costs = {}; snap.forEach(d => costs[d.id] = d.data().avg);
+    if (curTab === 'dash') drawDash();
+  }));
+  shell([['dash', 'لوحة التحكم', dashTab], ['buy', 'المشتريات', buyTab], ['stock', 'المخزن', stockTab], ['inv', 'الفواتير', invTab], ['logs', 'السجل', logsTab]]);
+}
+
+/* --- لوحة التحكم --- */
+/* --- لوحة التحكم --- */
+function dashTab() {
+  $('#view').innerHTML = `<div class="grid">
+    <div class="kpi"><small>مبيعات النهاردة</small><b id="kToday">0</b></div>
+    <div class="kpi"><small>مبيعات الشهر</small><b id="kMonth">0</b></div>
+    <div class="kpi"><small>ربح النهاردة</small><b id="kPToday">0</b></div>
+    <div class="kpi"><small>ربح الشهر</small><b id="kPMonth">0</b></div>
+    <div class="kpi"><small>عدد فواتير النهاردة</small><b id="kCnt">0</b></div>
+    <div class="kpi"><small>أصناف ناقصة</small><b id="kLow">0</b></div></div>
+    <div id="costNote" class="low" style="margin-bottom:10px"></div>
+    <div class="two">
+      <div class="card"><h3>مبيعات أيام الشهر</h3><div style="height:240px"><canvas id="c1"></canvas></div></div>
+      <div class="card"><h3>أكتر 5 أصناف مبيعاً (الشهر)</h3><div style="height:240px"><canvas id="c2"></canvas></div></div></div>
+    <div class="two">
+      <div class="card"><h3>النواقص</h3><div id="lowList"></div></div>
+      <div class="card"><h3>أكتر 5 أصناف ربحاً (الشهر)</h3><div id="topProfit"></div></div>
+      <div class="card"><h3>مبيعات الكاشير النهاردة</h3><div id="perCashier"></div></div></div>
+    <div class="card"><h3>آخر الحركات</h3><table><tbody id="recent"></tbody></table></div>`;
+  const u1 = onSnapshot(query(collection(db, 'invoices'), where('monthKey', '==', mKey(new Date()))),
+    s => { invMonth = s.docs.map(d => ({ id: d.id, ...d.data() })); drawDash(); });
+  const u2 = onSnapshot(query(collection(db, 'logs'), orderBy('ts', 'desc'), limit(8)), s => {
+    $('#recent').innerHTML = s.docs.map(d => { const x = d.data();
+      return `<tr><td>${when(x.ts)}</td><td>${esc(x.user)}</td><td>${esc(x.action)}</td><td>${esc(x.details)}</td></tr>`; }).join('');
+  });
+  sub(u1, u2);
+}
+function chart(id, type, labels, data, label) {
+  if (typeof Chart === 'undefined' || !$('#' + id)) return;
+  charts[id]?.destroy();
+  charts[id] = new Chart($('#' + id), { type, data: { labels, datasets: [{ label, data, backgroundColor: '#1e5eff', borderColor: '#1e5eff' }] },
+    options: { maintainAspectRatio: false, plugins: { legend: { display: false } } } });
+}
+function drawDash() {
+  if (!$('#kToday')) return;
+  const today = dKey(new Date()), sum = a => a.reduce((s, x) => s + x.total, 0);
+  const td = invMonth.filter(x => x.dayKey === today);
+  // ربح الفاتورة = (سعر البيع - متوسط التكلفة) × الكمية
+  const profitOf = a => a.reduce((s, x) => s + x.items.reduce((t, l) => t + (l.price - (costs[l.code] ?? 0)) * l.qty, 0), 0);
+  $('#kToday').textContent = fmt(sum(td));
+  $('#kMonth').textContent = fmt(sum(invMonth));
+  $('#kPToday').textContent = fmt(profitOf(td));
+  $('#kPMonth').textContent = fmt(profitOf(invMonth));
+  $('#kCnt').textContent = td.length;
+  // تنبيه لو في أصناف اتباعت من غير سعر شراء مسجّل
+  const noCost = new Set();
+  invMonth.forEach(x => x.items.forEach(l => { if (costs[l.code] === undefined) noCost.add(l.name); }));
+  $('#costNote').textContent = noCost.size ? `⚠ أصناف ملهاش سعر شراء مسجّل (الربح بيتحسب عليها كأن تكلفتها صفر): ${[...noCost].join('، ')}` : '';
+  // مبيعات كل يوم
+  const byDay = {}; invMonth.forEach(x => { const d = x.dayKey.slice(8); byDay[d] = (byDay[d] || 0) + x.total; });
+  const days = Object.keys(byDay).sort();
+  chart('c1', 'bar', days, days.map(d => byDay[d]), 'المبيعات');
+  // أكتر الأصناف مبيعاً وربحاً
+  const byItem = {}, byProfit = {};
+  invMonth.forEach(x => x.items.forEach(l => {
+    byItem[l.name] = (byItem[l.name] || 0) + l.qty;
+    byProfit[l.name] = (byProfit[l.name] || 0) + (l.price - (costs[l.code] ?? 0)) * l.qty;
+  }));
+  const top = Object.entries(byItem).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  chart('c2', 'bar', top.map(t => t[0]), top.map(t => t[1]), 'الكمية المباعة');
+  const tp = Object.entries(byProfit).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  $('#topProfit').innerHTML = tp.length ? `<table>${tp.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${fmt(v)}</td></tr>`).join('')}</table>` : 'لسه مفيش مبيعات';
+  // النواقص
+  const low = Object.values(items).filter(i => i.qty <= (i.min ?? 5)).sort((a, b) => a.qty - b.qty);
+  $('#kLow').textContent = low.length;
+  $('#lowList').innerHTML = low.length ? `<table>${low.map(i => `<tr><td>${esc(i.name)}</td><td class="low">${i.qty <= 0 ? 'خلص' : 'باقي ' + i.qty}</td></tr>`).join('')}</table>` : 'مفيش نواقص 👌';
+  // أداء الكاشير
+  const pc = {}; td.forEach(x => { pc[x.cashierName] = pc[x.cashierName] || { n: 0, t: 0 }; pc[x.cashierName].n++; pc[x.cashierName].t += x.total; });
+  $('#perCashier').innerHTML = Object.keys(pc).length ? `<table>${Object.entries(pc).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v.n} فاتورة</td><td>${fmt(v.t)}</td></tr>`).join('')}</table>` : 'لسه مفيش مبيعات النهاردة';
+}
+
+/* --- المشتريات --- */
+function fillBuy(it) {
+  if (!it) return;
+  $('#pCode').value = it.code; $('#pName').value = it.name; $('#pPrice').value = it.price; $('#pMin').value = it.min ?? 5;
+}
+function buyTab() {
+  $('#view').innerHTML = `<div class="card"><h3>إدخال مشتريات / تعديل صنف</h3><div class="form">
+    <label>كود الصنف<input id="pCode" list="dl"></label>
+    <label>اسم الصنف<input id="pName"></label>
+    <label>الكمية المشتراة<input id="pQty" type="number" step="any" min="0"></label>
+    <label>سعر الشراء (للوحدة)<input id="pCost" type="number" step="any" min="0"></label>
+    <label>سعر البيع<input id="pPrice" type="number" step="any" min="0"></label>
+    <label>حد التنبيه (النقص)<input id="pMin" type="number" min="0" value="5"></label>
+    <button class="btn" id="pSave">حفظ</button></div>
+    <small>لو الكود موجود الكمية بتتضاف على المخزن. سيب الكمية فاضية لو بتعدل الاسم أو السعر بس.</small></div>
+    <div class="card"><h3>آخر المشتريات</h3><table><thead><tr><th>الوقت</th><th>الكود</th><th>الصنف</th><th>الكمية</th><th>سعر الشراء</th></tr></thead><tbody id="buyRows"></tbody></table></div>`;
+  $('#pCode').onchange = () => fillBuy(items[$('#pCode').value.split('|')[0].trim()]);
+  $('#pSave').onclick = savePurchase;
+  if (prefill) { fillBuy(prefill); prefill = null; }
+  sub(onSnapshot(query(collection(db, 'purchases'), orderBy('ts', 'desc'), limit(30)), s => {
+    $('#buyRows').innerHTML = s.docs.map(d => { const x = d.data();
+      return `<tr><td>${when(x.ts)}</td><td>${esc(x.code)}</td><td>${esc(x.name)}</td><td>${x.qty}</td><td>${fmt(x.cost)}</td></tr>`; }).join('');
+  }));
+}
+async function savePurchase() {
+  const code = $('#pCode').value.split('|')[0].trim().replace(/\//g, '-');
+  const name = $('#pName').value.trim();
+  const qty = +$('#pQty').value || 0, cost = +$('#pCost').value || 0, price = +$('#pPrice').value || 0;
+  const min = $('#pMin').value === '' ? 5 : +$('#pMin').value;
+  if (!code || !name) return toast('الكود والاسم مطلوبين', true);
+  if (!(price > 0)) return toast('اكتب سعر البيع', true);
+  if (qty > 0 && !(cost > 0)) return toast('اكتب سعر الشراء مع الكمية', true);
+  const ref = doc(db, 'items', code), cRef = doc(db, 'costs', code);
+  try {
+    await runTransaction(db, async tx => {
+      const s = await tx.get(ref), c = await tx.get(cRef);      // القراءات الأول
+      const cur = s.exists() ? s.data().qty : 0;
+      tx.set(ref, { code, name, price, min, qty: cur + qty });
+      if (qty > 0) {
+        // متوسط التكلفة المرجّح = (الكمية القديمة × التكلفة القديمة + الجديدة × سعرها) ÷ الإجمالي
+        const oldAvg = c.exists() ? c.data().avg : 0;
+        const avg = (cur > 0 && c.exists()) ? (cur * oldAvg + qty * cost) / (cur + qty) : cost;
+        tx.set(cRef, { avg: Math.round(avg * 10000) / 10000 });
+        tx.set(doc(collection(db, 'purchases')), { code, name, qty, cost, ts: serverTimestamp(), by: me.name });
+      } else if (cost > 0) {
+        tx.set(cRef, { avg: cost });                            // ضبط التكلفة يدوياً من غير كمية
+      }
+    });
+    await log(qty > 0 ? 'مشتريات' : 'تعديل صنف', `${name} (${code}) - كمية ${qty} - سعر شراء ${fmt(cost)} - سعر بيع ${fmt(price)}`);
+    ['pCode', 'pName', 'pQty', 'pCost', 'pPrice'].forEach(i => $('#' + i).value = '');
+    toast('تم الحفظ ✔');
+  } catch (e) { toast(e.message, true); }
+}
+
+/* --- المخزن --- */
+function stockTab() {
+  $('#view').innerHTML = `<div class="card"><input id="fs" placeholder="بحث في المخزن..." style="margin-bottom:10px">
+    <table><thead><tr><th>الكود</th><th>الصنف</th><th>الكمية</th><th>سعر البيع</th><th>حد التنبيه</th><th></th></tr></thead><tbody id="stRows"></tbody></table></div>`;
+  $('#fs').oninput = drawStock; drawStock();
+}
+function drawStock() {
+  if (!$('#stRows')) return;
+  const f = ($('#fs')?.value || '').toLowerCase();
+  $('#stRows').innerHTML = Object.values(items).filter(i => (i.code + ' ' + i.name).toLowerCase().includes(f))
+    .sort((a, b) => a.name.localeCompare(b.name, 'ar'))
+    .map(i => `<tr><td>${esc(i.code)}</td><td>${esc(i.name)}</td>
+      <td class="${i.qty <= (i.min ?? 5) ? 'low' : ''}">${i.qty}${i.qty <= 0 ? ' (خلص)' : i.qty <= (i.min ?? 5) ? ' (ناقص)' : ''}</td>
+      <td>${fmt(i.price)}</td><td>${i.min ?? 5}</td>
+      <td><button class="btn sm" data-act="editItem" data-id="${esc(i.id)}">تعديل</button>
+          <button class="btn red sm" data-act="delItem" data-id="${esc(i.id)}">حذف</button></td></tr>`).join('');
+}
+
+/* --- الفواتير --- */
+function invTab() {
+  $('#view').innerHTML = `<div class="card"><div class="form"><label>التاريخ<input type="date" id="invDate" value="${dKey(new Date())}"></label>
+    <button class="btn" id="invGo">عرض</button></div></div>
+    <div class="card"><table><thead><tr><th>رقم</th><th>الوقت</th><th>الكاشير</th><th>الأصناف</th><th>الإجمالي</th><th></th></tr></thead><tbody id="invRows"></tbody></table></div>`;
+  const load = async () => {
+    const s = await getDocs(query(collection(db, 'invoices'), where('dayKey', '==', $('#invDate').value)));
+    invCache = {};
+    const arr = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => b.no - a.no);
+    arr.forEach(x => invCache[x.id] = x);
+    $('#invRows').innerHTML = arr.map(x => `<tr><td>${x.no}</td><td>${when(x.ts)}</td><td>${esc(x.cashierName)}</td>
+      <td>${esc(summ(x.items))}${x.editedBy ? ` <small>(عدّلها ${esc(x.editedBy)})</small>` : ''}</td><td>${fmt(x.total)}</td>
+      <td><button class="btn sm" data-act="editInv" data-id="${x.id}">تعديل</button>
+          <button class="btn red sm" data-act="delInv" data-id="${x.id}">حذف</button></td></tr>`).join('') || '<tr><td colspan="6">مفيش فواتير في اليوم ده</td></tr>';
+  };
+  $('#invGo').onclick = load; load();
+}
+
+/* --- السجل --- */
+function logsTab() {
+  $('#view').innerHTML = `<div class="card"><h3>سجل الحركات</h3><table><thead><tr><th>الوقت</th><th>المستخدم</th><th>الحركة</th><th>التفاصيل</th></tr></thead><tbody id="lgRows"></tbody></table></div>`;
+  sub(onSnapshot(query(collection(db, 'logs'), orderBy('ts', 'desc'), limit(200)), s => {
+    $('#lgRows').innerHTML = s.docs.map(d => { const x = d.data();
+      return `<tr><td>${when(x.ts)}</td><td>${esc(x.user)} (${x.role === 'admin' ? 'أدمن' : 'كاشير'})</td><td>${esc(x.action)}</td><td>${esc(x.details)}</td></tr>`; }).join('');
+  }));
+}
+
+/* ========== أزرار الجداول ========== */
+const actions = {
+  editInv: id => openEditor(invCache[id], () => go(curTab)),
+  async delInv(id) {                                  // حذف فاتورة (أدمن) وإرجاع الكميات للمخزن
+    const inv = invCache[id];
+    if (!confirm(`حذف الفاتورة رقم ${inv.no}؟ الكميات هترجع للمخزن`)) return;
+    try {
+      await runTransaction(db, async tx => {
+        const refs = inv.items.map(l => doc(db, 'items', l.code));
+        const snaps = await Promise.all(refs.map(r => tx.get(r)));
+        snaps.forEach((s, i) => { if (s.exists()) tx.update(refs[i], { qty: s.data().qty + inv.items[i].qty }); });
+        tx.delete(doc(db, 'invoices', id));
+      });
+      await log('حذف فاتورة', `فاتورة ${inv.no} (${inv.cashierName}) - ${summ(inv.items)} - ${fmt(inv.total)}`);
+      toast('تم الحذف'); go(curTab);
+    } catch (e) { toast(e.message, true); }
+  },
+  editItem: id => { prefill = items[id]; go('buy'); },
+  async delItem(id) {
+    if (!confirm('حذف الصنف ' + items[id].name + '؟')) return;
+    await deleteDoc(doc(db, 'items', id));
+    await log('حذف صنف', `${items[id].name} (${id})`);
+  }
+};
+</script>
+</body>
+</html>
