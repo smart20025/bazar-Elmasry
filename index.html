@@ -434,10 +434,23 @@ async function savePurchase() {
 }
 
 /* --- المخزن --- */
+let bought = {}, sold = {};   // المشتراة والمباعة لكل صنف
 function stockTab() {
   $('#view').innerHTML = `<div class="card"><input id="fs" placeholder="بحث في المخزن..." style="margin-bottom:10px">
-    <table><thead><tr><th>الكود</th><th>الصنف</th><th>الكمية</th><th>سعر البيع</th><th>حد التنبيه</th><th></th></tr></thead><tbody id="stRows"></tbody></table></div>`;
-  $('#fs').oninput = drawStock; drawStock();
+    <table><thead><tr><th>الكود</th><th>الصنف</th><th>المشتراة</th><th>المباعة</th><th>المتبقي</th><th>سعر البيع</th><th>حد التنبيه</th><th></th></tr></thead><tbody id="stRows"></tbody></table></div>`;
+  $('#fs').oninput = drawStock;
+  const u1 = onSnapshot(collection(db, 'purchases'), s => {
+    bought = {};
+    s.forEach(d => { const x = d.data(); bought[x.code] = (bought[x.code] || 0) + (x.qty || 0); });
+    drawStock();
+  });
+  const u2 = onSnapshot(collection(db, 'invoices'), s => {
+    sold = {};
+    s.forEach(d => (d.data().items || []).forEach(l => sold[l.code] = (sold[l.code] || 0) + l.qty));
+    drawStock();
+  });
+  sub(u1, u2);
+  drawStock();
 }
 function drawStock() {
   if (!$('#stRows')) return;
@@ -445,6 +458,8 @@ function drawStock() {
   $('#stRows').innerHTML = Object.values(items).filter(i => (i.code + ' ' + i.name).toLowerCase().includes(f))
     .sort((a, b) => a.name.localeCompare(b.name, 'ar'))
     .map(i => `<tr><td>${esc(i.code)}</td><td>${esc(i.name)}</td>
+      <td>${fmt(bought[i.id] || 0)}</td>
+      <td>${fmt(sold[i.id] || 0)}</td>
       <td class="${i.qty <= (i.min ?? 5) ? 'low' : ''}">${i.qty}${i.qty <= 0 ? ' (خلص)' : i.qty <= (i.min ?? 5) ? ' (ناقص)' : ''}</td>
       <td>${fmt(i.price)}</td><td>${i.min ?? 5}</td>
       <td><button class="btn sm" data-act="editItem" data-id="${esc(i.id)}">تعديل</button>
